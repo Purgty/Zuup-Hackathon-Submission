@@ -26,28 +26,23 @@ import type {
 // ─────────────────────────────────────────────────────────────
 
 const stops: BusStop[] = [
-  // Route 1: Hosur Road (South to North)
-  { id: 'stop-1', name: 'Silk Board', lat: 12.9172, lng: 77.6228, geofenceRadiusM: 150, routesServing: ['route-1', 'route-2'], requiresLowFloor: false, isTerminus: true, isActive: true },
-  { id: 'stop-2', name: 'Koramangala Water Tank', lat: 12.9274, lng: 77.6208, geofenceRadiusM: 100, routesServing: ['route-1'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  { id: 'stop-3', name: 'Dairy Circle', lat: 12.9377, lng: 77.5998, geofenceRadiusM: 100, routesServing: ['route-1'], requiresLowFloor: false, isTerminus: false, isActive: true },
+  // Route 1: City Center to South (MG Road to Dairy Circle)
+  { id: 'stop-1', name: 'MG Road', lat: 12.9752, lng: 77.6095, geofenceRadiusM: 150, routesServing: ['route-1', 'route-3'], requiresLowFloor: false, isTerminus: true, isActive: true },
+  { id: 'stop-2', name: 'Brigade Road', lat: 12.9732, lng: 77.6075, geofenceRadiusM: 100, routesServing: ['route-1'], requiresLowFloor: false, isTerminus: false, isActive: true },
+  { id: 'stop-3', name: 'Richmond Circle', lat: 12.9645, lng: 77.5971, geofenceRadiusM: 100, routesServing: ['route-1'], requiresLowFloor: false, isTerminus: false, isActive: true },
   { id: 'stop-4', name: 'Shantinagar TTMC', lat: 12.9515, lng: 77.5954, geofenceRadiusM: 150, routesServing: ['route-1'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  { id: 'stop-5', name: 'Corporation Circle', lat: 12.9657, lng: 77.5880, geofenceRadiusM: 120, routesServing: ['route-1', 'route-3'], requiresLowFloor: false, isTerminus: true, isActive: true },
+  { id: 'stop-5', name: 'Dairy Circle', lat: 12.9377, lng: 77.5998, geofenceRadiusM: 120, routesServing: ['route-1', 'route-2'], requiresLowFloor: false, isTerminus: true, isActive: true },
 
-  // Route 2: Outer Ring Road (East to South)
-  { id: 'stop-6', name: 'KR Puram', lat: 13.0016, lng: 77.6746, geofenceRadiusM: 150, routesServing: ['route-2'], requiresLowFloor: true, isTerminus: true, isActive: true },
-  { id: 'stop-7', name: 'Marathahalli', lat: 12.9560, lng: 77.6983, geofenceRadiusM: 100, routesServing: ['route-2'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  { id: 'stop-8', name: 'Bellandur', lat: 12.9264, lng: 77.6685, geofenceRadiusM: 100, routesServing: ['route-2'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  { id: 'stop-9', name: 'Agara', lat: 12.9234, lng: 77.6472, geofenceRadiusM: 100, routesServing: ['route-2'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  // stop-1 (Silk Board) is shared
-  { id: 'stop-10', name: 'Jayadeva', lat: 12.9243, lng: 77.6085, geofenceRadiusM: 100, routesServing: ['route-2'], requiresLowFloor: false, isTerminus: true, isActive: true },
+  // Route 2: East to South (Indiranagar to Dairy Circle)
+  { id: 'stop-6', name: 'Indiranagar 100ft', lat: 12.9784, lng: 77.6408, geofenceRadiusM: 150, routesServing: ['route-2', 'route-3'], requiresLowFloor: true, isTerminus: true, isActive: true },
+  { id: 'stop-7', name: 'Domlur TTMC', lat: 12.9622, lng: 77.6383, geofenceRadiusM: 100, routesServing: ['route-2'], requiresLowFloor: false, isTerminus: false, isActive: true },
+  { id: 'stop-8', name: 'Sony World Junction', lat: 12.9365, lng: 77.6253, geofenceRadiusM: 100, routesServing: ['route-2'], requiresLowFloor: false, isTerminus: false, isActive: true },
+  { id: 'stop-9', name: 'Forum Mall Koramangala', lat: 12.9344, lng: 77.6111, geofenceRadiusM: 100, routesServing: ['route-2'], requiresLowFloor: false, isTerminus: false, isActive: true },
+  // stop-5 (Dairy Circle) is shared terminus
 
-  // Route 3: Old Airport Road (East to West)
-  { id: 'stop-11', name: 'Whitefield TTMC', lat: 12.9749, lng: 77.7473, geofenceRadiusM: 150, routesServing: ['route-3'], requiresLowFloor: false, isTerminus: true, isActive: true },
-  { id: 'stop-12', name: 'Kundalahalli', lat: 12.9652, lng: 77.7188, geofenceRadiusM: 100, routesServing: ['route-3'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  { id: 'stop-13', name: 'HAL Airport', lat: 12.9575, lng: 77.6698, geofenceRadiusM: 100, routesServing: ['route-3'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  { id: 'stop-14', name: 'Domlur', lat: 12.9622, lng: 77.6383, geofenceRadiusM: 100, routesServing: ['route-3'], requiresLowFloor: false, isTerminus: false, isActive: true },
-  { id: 'stop-15', name: 'MG Road', lat: 12.9752, lng: 77.6095, geofenceRadiusM: 100, routesServing: ['route-3'], requiresLowFloor: true, isTerminus: false, isActive: true },
-  // stop-5 (Corporation Circle) is shared
+  // Route 3: East to City Center (Indiranagar to MG Road)
+  { id: 'stop-10', name: 'Ulsoor Lake', lat: 12.9760, lng: 77.6225, geofenceRadiusM: 100, routesServing: ['route-3'], requiresLowFloor: false, isTerminus: false, isActive: true },
+  // stop-1 (MG Road) is shared terminus
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -57,7 +52,7 @@ const stops: BusStop[] = [
 const routes: BusRoute[] = [
   {
     id: 'route-1',
-    name: 'Silk Board → Corporation',
+    name: 'MG Road → Dairy Circle',
     shortCode: 'R1',
     stops: ['stop-1', 'stop-2', 'stop-3', 'stop-4', 'stop-5'],
     routeType: 'HIGH_FREQ',
@@ -69,9 +64,9 @@ const routes: BusRoute[] = [
   },
   {
     id: 'route-2',
-    name: 'KR Puram → Jayadeva (ORR)',
+    name: 'Indiranagar → Dairy Circle',
     shortCode: 'R2',
-    stops: ['stop-6', 'stop-7', 'stop-8', 'stop-9', 'stop-1', 'stop-10'],
+    stops: ['stop-6', 'stop-7', 'stop-8', 'stop-9', 'stop-5'],
     routeType: 'MEDIUM_FREQ',
     scheduledFrequencyMin: 15,
     serviceGuarantee: { maxWaitMinutes: 25, minBusesInService: 1, lastBusProtectionMin: 30 },
@@ -81,9 +76,9 @@ const routes: BusRoute[] = [
   },
   {
     id: 'route-3',
-    name: 'Whitefield → Corporation (Old Airport)',
+    name: 'Indiranagar → MG Road',
     shortCode: 'R3',
-    stops: ['stop-11', 'stop-12', 'stop-13', 'stop-14', 'stop-15', 'stop-5'],
+    stops: ['stop-6', 'stop-10', 'stop-1'],
     routeType: 'MEDIUM_FREQ',
     scheduledFrequencyMin: 15,
     serviceGuarantee: { maxWaitMinutes: 20, minBusesInService: 1, lastBusProtectionMin: 30 },

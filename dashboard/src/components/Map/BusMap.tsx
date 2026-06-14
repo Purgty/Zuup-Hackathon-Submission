@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import { useStore } from '../../store/useStore';
+import type { BusVehicle } from '../../types';
+
+type LngLat = [number, number];
+
+interface RoutePosition {
+  coords: LngLat;
+  bearing: number;
+}
 
 // Light map style — Stadia Alidade Smooth (no API key required)
 const LIGHT_MAP_STYLE: maplibregl.StyleSpecification = {
@@ -65,41 +73,47 @@ export function BusMap() {
     };
   }, []);
 
-  const [routeGeometries, setRouteGeometries] = useState<Record<string, number[][]>>({});
+  const [routeGeometries, setRouteGeometries] = useState<Record<string, LngLat[]>>({});
   const [routeSnappedWaypoints, setRouteSnappedWaypoints] = useState<Record<string, [number, number][]>>({});
 
   // ── Fetch route geometries from OSRM (fetch each route once only) ──
   useEffect(() => {
     if (Object.keys(routes).length === 0 || Object.keys(stops).length === 0) return;
 
-    Object.values(routes).forEach(async (route) => {
-      // Skip if already fetched or currently fetching
-      if (fetchedRoutesRef.current.has(route.id)) return;
-      const routeStops = route.stops.map((id) => stops[id]).filter(Boolean);
-      if (routeStops.length < 2) return;
+    const fetchGeometries = async () => {
+      for (const route of Object.values(routes)) {
+        // Skip if already fetched or currently fetching
+        if (fetchedRoutesRef.current.has(route.id)) continue;
+        const routeStops = route.stops.map((id) => stops[id]).filter(Boolean);
+        if (routeStops.length < 2) continue;
 
-      fetchedRoutesRef.current.add(route.id); // mark as in-flight immediately
-      const coordString = routeStops.map(s => `${s.lng},${s.lat}`).join(';');
-      try {
-        const res = await fetch(
-          `https://router.project-osrm.org/route/v1/driving/${coordString}?overview=full&geometries=geojson`
-        );
-        const data = await res.json();
-        if (data.routes?.length > 0) {
-          setRouteGeometries(prev => ({ ...prev, [route.id]: data.routes[0].geometry.coordinates }));
-          // Extract snapped waypoints (where stops were snapped to actual streets)
-          if (data.waypoints?.length > 0) {
-            const snappedCoords = data.waypoints.map((wp: any) => [wp.location[0], wp.location[1]] as [number, number]);
-            setRouteSnappedWaypoints(prev => ({ ...prev, [route.id]: snappedCoords }));
+        fetchedRoutesRef.current.add(route.id); // mark as in-flight immediately
+        const coordString = routeStops.map(s => `${s.lng},${s.lat}`).join(';');
+        try {
+          const res = await fetch(
+            `https://router.project-osrm.org/route/v1/driving/${coordString}?overview=full&geometries=geojson`
+          );
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (data.routes?.length > 0) {
+            setRouteGeometries(prev => ({ ...prev, [route.id]: data.routes[0].geometry.coordinates as LngLat[] }));
+            // Extract snapped waypoints (where stops were snapped to actual streets)
+            if (data.waypoints?.length > 0) {
+              const snappedCoords = data.waypoints.map((wp: any) => [wp.location[0], wp.location[1]] as [number, number]);
+              setRouteSnappedWaypoints(prev => ({ ...prev, [route.id]: snappedCoords }));
+            }
+          } else {
+            fetchedRoutesRef.current.delete(route.id); // allow retry
           }
-        } else {
+        } catch (e) {
+          console.error('OSRM fetch failed for', route.id, e);
           fetchedRoutesRef.current.delete(route.id); // allow retry
         }
-      } catch (e) {
-        console.error('OSRM fetch failed for', route.id, e);
-        fetchedRoutesRef.current.delete(route.id); // allow retry
+        // Sleep 600ms to avoid OSRM rate limits (max 1-2 req/sec for public API)
+        await new Promise(r => setTimeout(r, 600));
       }
-    });
+    };
+    fetchGeometries();
   }, [routes, stops]);
 
   // ── Draw route lines ───────────────────────────────────────
@@ -112,7 +126,8 @@ export function BusMap() {
         const routeStops = route.stops.map((id) => stops[id]).filter(Boolean);
         if (routeStops.length < 2) continue;
 
-        const coordinates = routeGeometries[route.id] || routeStops.map((s) => [s.lng, s.lat] as [number, number]);
+        const coordinates = routeGeometries[route.id];
+        if (!coordinates) continue; // Wait for OSRM geometry, no straight-line fallbacks
         const sourceId = `route-src-${route.id}`;
         const layerId = `route-line-${route.id}`;
 
@@ -233,12 +248,13 @@ export function BusMap() {
     }
 
     for (const bus of Object.values(buses)) {
-      if (!isValidCoord(bus.lat, bus.lng)) continue;
-
-      const homeRoute = routes[bus.homeRouteId ?? bus.currentRouteId ?? ''];
       const currentRoute = routes[bus.currentRouteId ?? ''];
+      const homeRoute = routes[bus.homeRouteId ?? bus.currentRouteId ?? ''];
       const isRerouted = bus.homeRouteId != null && bus.homeRouteId !== bus.currentRouteId;
       const isSelected = bus.id === selectedBusId;
+      const displayRouteId = currentRoute?.id ?? homeRoute?.id;
+      const displayPosition = resolveBusDisplayPosition(bus, displayRouteId ? routeGeometries[displayRouteId] : undefined);
+      if (!displayPosition) continue;
 
       // Bus color = home route color (not status)
       const busColor = homeRoute?.color ?? '#6366f1';
@@ -250,8 +266,8 @@ export function BusMap() {
 
       if (busMarkersRef.current.has(bus.id)) {
         const marker = busMarkersRef.current.get(bus.id)!;
-        marker.setLngLat([bus.lng, bus.lat]);
-        applyBusMarkerStyle(marker.getElement(), busColor, isSelected, isRerouted, bus.occupancyPct, bus.bearing, currentRoute?.color);
+        marker.setLngLat(displayPosition.coords);
+        applyBusMarkerStyle(marker.getElement(), busColor, isSelected, isRerouted, bus.occupancyPct, displayPosition.bearing, currentRoute?.color);
         // Update popup HTML
         const popup = marker.getPopup();
         if (popup) {
@@ -259,7 +275,7 @@ export function BusMap() {
         }
       } else {
         const el = document.createElement('div');
-        applyBusMarkerStyle(el, busColor, isSelected, isRerouted, bus.occupancyPct, bus.bearing, currentRoute?.color);
+        applyBusMarkerStyle(el, busColor, isSelected, isRerouted, bus.occupancyPct, displayPosition.bearing, currentRoute?.color);
 
         el.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -274,25 +290,126 @@ export function BusMap() {
         el.addEventListener('mouseleave', () => popup.remove());
 
         const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
-          .setLngLat([bus.lng, bus.lat])
+          .setLngLat(displayPosition.coords)
           .addTo(map);
 
         busMarkersRef.current.set(bus.id, marker);
       }
     }
-  }, [buses, selectedBusId, routes, rerouteOrders, selectBus]);
+  }, [buses, selectedBusId, routes, rerouteOrders, routeGeometries, selectBus]);
 
   // ── Pan to selected bus ─────────────────────────────────────
+  const prevSelectedBusRef = useRef<string | null>(null);
+
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !selectedBusId) return;
-    const bus = buses[selectedBusId];
-    if (bus && isValidCoord(bus.lat, bus.lng)) {
-      map.flyTo({ center: [bus.lng, bus.lat], zoom: 14, speed: 1.2 });
+    if (!map || !selectedBusId) {
+      prevSelectedBusRef.current = selectedBusId;
+      return;
     }
-  }, [selectedBusId]);
+
+    // Only pan if the user actually clicked a NEW bus, 
+    // to prevent aggressively snapping back on every 2s live update tick.
+    if (prevSelectedBusRef.current !== selectedBusId) {
+      const bus = buses[selectedBusId];
+      if (bus) {
+        const route = routes[bus.currentRouteId ?? ''];
+        const homeRoute = routes[bus.homeRouteId ?? ''];
+        const displayRouteId = route?.id ?? homeRoute?.id;
+        const displayPosition = resolveBusDisplayPosition(bus, displayRouteId ? routeGeometries[displayRouteId] : undefined);
+        if (displayPosition) {
+          map.flyTo({ center: displayPosition.coords, zoom: 14, speed: 1.2 });
+        }
+      }
+      prevSelectedBusRef.current = selectedBusId;
+    }
+  }, [selectedBusId, buses, routes, routeGeometries]);
 
   return <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />;
+}
+
+function resolveBusDisplayPosition(bus: BusVehicle, routeCoordinates?: LngLat[]): RoutePosition | null {
+  if (routeCoordinates && routeCoordinates.length >= 2 && Number.isFinite(bus.positionFraction)) {
+    return getRoutePositionAtFraction(routeCoordinates, bus.positionFraction);
+  }
+
+  if (isValidCoord(bus.lat, bus.lng)) {
+    return {
+      coords: [bus.lng, bus.lat],
+      bearing: Number.isFinite(bus.bearing) ? bus.bearing : 0,
+    };
+  }
+
+  return null;
+}
+
+function getRoutePositionAtFraction(coordinates: LngLat[], fraction: number): RoutePosition | null {
+  if (coordinates.length === 0) return null;
+  if (coordinates.length === 1) return { coords: coordinates[0], bearing: 0 };
+
+  const segmentLengths: number[] = [];
+  let totalLength = 0;
+  for (let i = 1; i < coordinates.length; i++) {
+    const length = haversineMeters(coordinates[i - 1], coordinates[i]);
+    segmentLengths.push(length);
+    totalLength += length;
+  }
+
+  if (totalLength <= 0) return { coords: coordinates[0], bearing: 0 };
+
+  const clampedFraction = Math.max(0, Math.min(1, fraction));
+  let targetDistance = clampedFraction * totalLength;
+
+  for (let i = 0; i < segmentLengths.length; i++) {
+    const segmentLength = segmentLengths[i];
+    if (targetDistance <= segmentLength || i === segmentLengths.length - 1) {
+      const start = coordinates[i];
+      const end = coordinates[i + 1];
+      const t = segmentLength > 0 ? targetDistance / segmentLength : 0;
+
+      return {
+        coords: [
+          start[0] + (end[0] - start[0]) * t,
+          start[1] + (end[1] - start[1]) * t,
+        ],
+        bearing: bearingBetween(start, end),
+      };
+    }
+
+    targetDistance -= segmentLength;
+  }
+
+  const last = coordinates[coordinates.length - 1];
+  const previous = coordinates[coordinates.length - 2];
+  return { coords: last, bearing: bearingBetween(previous, last) };
+}
+
+function haversineMeters(a: LngLat, b: LngLat): number {
+  const earthRadiusM = 6371000;
+  const toRad = Math.PI / 180;
+  const dLat = (b[1] - a[1]) * toRad;
+  const dLng = (b[0] - a[0]) * toRad;
+  const lat1 = a[1] * toRad;
+  const lat2 = b[1] * toRad;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+
+  return earthRadiusM * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function bearingBetween(a: LngLat, b: LngLat): number {
+  const toRad = Math.PI / 180;
+  const toDeg = 180 / Math.PI;
+  const lat1 = a[1] * toRad;
+  const lat2 = b[1] * toRad;
+  const dLng = (b[0] - a[0]) * toRad;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+
+  return (Math.atan2(y, x) * toDeg + 360) % 360;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -339,16 +456,15 @@ function applyStopMarkerStyle(el: HTMLElement, isOverloaded: boolean, isTerminus
     background: bg,
     border: `2px solid ${border}`,
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    // ✅ Only transition safe visual properties — never 'all'
+    transition: 'background 0.2s ease, border-color 0.2s ease',
     zIndex: '20',
-    position: 'relative',
+    // ✅ Removed 'position: relative' — MapLibre's wrapper handles this
   });
 }
-
 // ─────────────────────────────────────────────────────────────────
 // Helper: bus marker styling
 // ─────────────────────────────────────────────────────────────────
-
 function applyBusMarkerStyle(
   el: HTMLElement,
   homeColor: string,
@@ -362,13 +478,56 @@ function applyBusMarkerStyle(
   const borderColor = isSelected
     ? '#0F172A'
     : isRerouted
-    ? (currentRouteColor ?? '#f59e0b')
-    : '#E2E8F0';
+      ? (currentRouteColor ?? '#f59e0b')
+      : '#E2E8F0';
   const borderWidth = isRerouted || isSelected ? '2px' : '1px';
+  const pointerColor = isSelected ? '#0F172A' : isRerouted ? (currentRouteColor ?? '#f59e0b') : homeColor;
 
+  // ✅ el is MapLibre's anchor — only set dimensions, never position
   Object.assign(el.style, {
     width: '28px',
     height: '28px',
+  });
+
+  // ── Reuse existing inner container if already built ──────────
+  let inner = el.querySelector<HTMLElement>('.bus-inner');
+  if (inner) {
+    // Fast path: update only dynamic styles, no DOM rebuilding
+    Object.assign(inner.style, {
+      background: homeColor,
+      border: `${borderWidth} ${borderStyle} ${borderColor}`,
+      boxShadow: isSelected ? `0 0 0 3px ${homeColor}55` : 'none',
+    });
+
+    const compass = inner.querySelector<HTMLElement>('.compass-wrapper');
+    if (compass) {
+      compass.style.transform = `rotate(${bearing}deg)`;
+      const pointer = compass.querySelector<HTMLElement>('.compass-pointer');
+      if (pointer) pointer.style.borderBottomColor = pointerColor;
+    }
+
+    // Update reroute badge visibility
+    let badge = inner.querySelector<HTMLElement>('.reroute-badge');
+    if (isRerouted) {
+      if (!badge) {
+        badge = buildRerouteBadge(currentRouteColor);
+        inner.appendChild(badge);
+      } else {
+        badge.style.background = currentRouteColor ?? '#f59e0b';
+      }
+    } else if (badge) {
+      badge.remove();
+    }
+    return;
+  }
+
+  // ── First render: build the full subtree ────────────────────
+  inner = document.createElement('div');
+  inner.className = 'bus-inner';
+  Object.assign(inner.style, {
+    position: 'relative',     // ✅ positioning context lives here, not on el
+    width: '100%',
+    height: '100%',
     borderRadius: '6px',
     background: homeColor,
     border: `${borderWidth} ${borderStyle} ${borderColor}`,
@@ -377,71 +536,68 @@ function applyBusMarkerStyle(
     justifyContent: 'center',
     fontSize: '14px',
     cursor: 'pointer',
-    position: 'relative',
     zIndex: '30',
     userSelect: 'none',
     boxShadow: isSelected ? `0 0 0 3px ${homeColor}55` : 'none',
-    transition: 'box-shadow 0.2s ease',
+    transition: 'box-shadow 0.2s ease, border-color 0.2s ease', // ✅ no 'all'
   });
-
-  el.innerHTML = '';
 
   const icon = document.createElement('span');
   icon.textContent = '🚌';
-  el.appendChild(icon);
+  inner.appendChild(icon);
 
-  // Directional pointer (compass needle)
   const compassWrapper = document.createElement('div');
+  compassWrapper.className = 'compass-wrapper';
   Object.assign(compassWrapper.style, {
     position: 'absolute',
-    top: '0',
-    left: '0',
-    width: '100%',
-    height: '100%',
+    top: '0', left: '0',
+    width: '100%', height: '100%',
     transform: `rotate(${bearing}deg)`,
     pointerEvents: 'none',
   });
 
-  const pointerColor = isSelected ? '#0F172A' : isRerouted ? (currentRouteColor ?? '#f59e0b') : homeColor;
-  
   const pointer = document.createElement('div');
+  pointer.className = 'compass-pointer';
   Object.assign(pointer.style, {
     position: 'absolute',
     top: '-7px',
     left: '50%',
     transform: 'translateX(-50%)',
-    width: '0',
-    height: '0',
+    width: '0', height: '0',
     borderLeft: '5px solid transparent',
     borderRight: '5px solid transparent',
     borderBottom: `6px solid ${pointerColor}`,
   });
   compassWrapper.appendChild(pointer);
-  el.appendChild(compassWrapper);
+  inner.appendChild(compassWrapper);
 
   if (isRerouted) {
-    const badge = document.createElement('span');
-    badge.textContent = '↪';
-    Object.assign(badge.style, {
-      position: 'absolute',
-      top: '-7px',
-      right: '-7px',
-      background: currentRouteColor ?? '#f59e0b',
-      color: '#fff',
-      borderRadius: '50%',
-      width: '14px',
-      height: '14px',
-      fontSize: '9px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontWeight: '700',
-      border: '1px solid #fff',
-    });
-    el.appendChild(badge);
+    inner.appendChild(buildRerouteBadge(currentRouteColor));
   }
+
+  el.appendChild(inner);
 }
 
+function buildRerouteBadge(currentRouteColor?: string): HTMLElement {
+  const badge = document.createElement('span');
+  badge.className = 'reroute-badge';
+  badge.textContent = '↪';
+  Object.assign(badge.style, {
+    position: 'absolute',
+    top: '-7px', right: '-7px',
+    background: currentRouteColor ?? '#f59e0b',
+    color: '#fff',
+    borderRadius: '50%',
+    width: '14px', height: '14px',
+    fontSize: '9px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: '700',
+    border: '1px solid #fff',
+  });
+  return badge;
+}
 // ─────────────────────────────────────────────────────────────────
 // Helper: bus popup HTML
 // ─────────────────────────────────────────────────────────────────

@@ -122,19 +122,17 @@ export default function App() {
         {/* Map legend */}
         <div className="map-legend">
           <div className="legend-item">
-            <div style={{ width: 16, height: 3, background: 'var(--route1)' }} /> R1 (Indiranagar)
+            <div style={{ width: 16, height: 3, background: 'var(--route1)' }} /> R1 (MG Road)
           </div>
           <div className="legend-item">
-            <div style={{ width: 16, height: 3, background: 'var(--route2)' }} /> R2 (JP Nagar)
+            <div style={{ width: 16, height: 3, background: 'var(--route2)' }} /> R2 (Indiranagar 100ft)
           </div>
           <div className="legend-item">
-            <div style={{ width: 16, height: 3, background: 'var(--route3)' }} /> R3 (Wilson Garden)
+            <div style={{ width: 16, height: 3, background: 'var(--route3)' }} /> R3 (Ulsoor)
           </div>
           <div className="legend-item" style={{ marginLeft: 16 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--brand)' }} /> Stop (Normal)
-          </div>
-          <div className="legend-item">
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--tier1)' }} /> Stop (Overloaded)
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#FFFFFF', border: '2px solid #2563EB' }} /> Stop (Normal)
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#ef4444', border: '2px solid #b91c1c' }} /> Stop (Overloaded)
           </div>
         </div>
       </main>
