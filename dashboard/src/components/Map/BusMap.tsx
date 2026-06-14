@@ -10,6 +10,11 @@ interface RoutePosition {
   bearing: number;
 }
 
+interface RouteGeometryPair {
+  forward: LngLat[];
+  reverse: LngLat[];
+}
+
 // Light map style — Stadia Alidade Smooth (no API key required)
 const LIGHT_MAP_STYLE: maplibregl.StyleSpecification = {
   version: 8,
@@ -46,7 +51,7 @@ export function BusMap() {
   /** Track which routeIds have already been fetched from OSRM */
   const fetchedRoutesRef = useRef<Set<string>>(new Set());
 
-  const { buses, stops, routes, demandSnapshots, rerouteOrders, selectedBusId, selectBus } = useStore();
+  const { buses, stops, routes, demandSnapshots, rerouteOrders, selectedBusId, selectBus, hoveredSurgeStopId } = useStore();
 
   // ── Initialize map once ────────────────────────────────────
   useEffect(() => {
@@ -73,89 +78,92 @@ export function BusMap() {
     };
   }, []);
 
-  const [routeGeometries, setRouteGeometries] = useState<Record<string, LngLat[]>>({});
+  const [routeGeometries, setRouteGeometries] = useState<Record<string, RouteGeometryPair>>({});
   const [routeSnappedWaypoints, setRouteSnappedWaypoints] = useState<Record<string, [number, number][]>>({});
 
-  // ── Fetch route geometries from OSRM (fetch each route once only) ──
+  // ── Fetch route geometries from OSRM (both forward AND return legs) ──
   useEffect(() => {
     if (Object.keys(routes).length === 0 || Object.keys(stops).length === 0) return;
 
     const fetchGeometries = async () => {
       for (const route of Object.values(routes)) {
-        // Skip if already fetched or currently fetching
         if (fetchedRoutesRef.current.has(route.id)) continue;
         const routeStops = route.stops.map((id) => stops[id]).filter(Boolean);
         if (routeStops.length < 2) continue;
 
-        fetchedRoutesRef.current.add(route.id); // mark as in-flight immediately
-        const coordString = routeStops.map(s => `${s.lng},${s.lat}`).join(';');
+        fetchedRoutesRef.current.add(route.id);
+        const fwdCoordStr = routeStops.map(s => `${s.lng},${s.lat}`).join(';');
+        const revCoordStr = [...routeStops].reverse().map(s => `${s.lng},${s.lat}`).join(';');
         try {
-          const res = await fetch(
-            `https://router.project-osrm.org/route/v1/driving/${coordString}?overview=full&geometries=geojson`
-          );
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const data = await res.json();
-          if (data.routes?.length > 0) {
-            setRouteGeometries(prev => ({ ...prev, [route.id]: data.routes[0].geometry.coordinates as LngLat[] }));
-            // Extract snapped waypoints (where stops were snapped to actual streets)
-            if (data.waypoints?.length > 0) {
-              const snappedCoords = data.waypoints.map((wp: any) => [wp.location[0], wp.location[1]] as [number, number]);
+          const [fwdRes, revRes] = await Promise.all([
+            fetch(`https://router.project-osrm.org/route/v1/driving/${fwdCoordStr}?overview=full&geometries=geojson`),
+            fetch(`https://router.project-osrm.org/route/v1/driving/${revCoordStr}?overview=full&geometries=geojson`),
+          ]);
+          const [fwdData, revData] = await Promise.all([fwdRes.json(), revRes.json()]);
+          if (fwdData.routes?.length > 0 && revData.routes?.length > 0) {
+            const forward = fwdData.routes[0].geometry.coordinates as LngLat[];
+            const reverse = revData.routes[0].geometry.coordinates as LngLat[];
+            setRouteGeometries(prev => ({ ...prev, [route.id]: { forward, reverse } }));
+            // Snapped waypoints from forward direction
+            if (fwdData.waypoints?.length > 0) {
+              const snappedCoords = fwdData.waypoints.map((wp: any) => [wp.location[0], wp.location[1]] as [number, number]);
               setRouteSnappedWaypoints(prev => ({ ...prev, [route.id]: snappedCoords }));
             }
           } else {
-            fetchedRoutesRef.current.delete(route.id); // allow retry
+            fetchedRoutesRef.current.delete(route.id);
           }
         } catch (e) {
           console.error('OSRM fetch failed for', route.id, e);
-          fetchedRoutesRef.current.delete(route.id); // allow retry
+          fetchedRoutesRef.current.delete(route.id);
         }
-        // Sleep 600ms to avoid OSRM rate limits (max 1-2 req/sec for public API)
-        await new Promise(r => setTimeout(r, 600));
+        await new Promise(r => setTimeout(r, 700));
       }
     };
     fetchGeometries();
   }, [routes, stops]);
 
-  // ── Draw route lines ───────────────────────────────────────
+  // ── Draw bidirectional route lines ─────────────────────────
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || Object.keys(routes).length === 0 || Object.keys(stops).length === 0) return;
+    if (!map || Object.keys(routes).length === 0) return;
 
     const drawRoutes = () => {
       for (const route of Object.values(routes)) {
-        const routeStops = route.stops.map((id) => stops[id]).filter(Boolean);
-        if (routeStops.length < 2) continue;
+        const geoPair = routeGeometries[route.id];
+        if (!geoPair) continue;
 
-        const coordinates = routeGeometries[route.id];
-        if (!coordinates) continue; // Wait for OSRM geometry, no straight-line fallbacks
-        const sourceId = `route-src-${route.id}`;
-        const layerId = `route-line-${route.id}`;
-
-        const source = map.getSource(sourceId) as maplibregl.GeoJSONSource;
-        if (source) {
-          source.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } });
-        } else {
-          map.addSource(sourceId, {
-            type: 'geojson',
-            data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } },
-          });
+        // Forward leg — solid, full opacity, slight right-offset
+        const fwdSrcId = `route-src-${route.id}-fwd`;
+        const fwdLayerId = `route-line-${route.id}-fwd`;
+        const fwdGeoJson = { type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: geoPair.forward } };
+        const fwdSrc = map.getSource(fwdSrcId) as maplibregl.GeoJSONSource;
+        if (fwdSrc) fwdSrc.setData(fwdGeoJson);
+        else map.addSource(fwdSrcId, { type: 'geojson', data: fwdGeoJson });
+        if (!map.getLayer(fwdLayerId)) {
+          map.addLayer({ id: fwdLayerId, type: 'line', source: fwdSrcId,
+            paint: { 'line-color': route.color, 'line-width': 4, 'line-opacity': 0.9, 'line-offset': 3 },
+            layout: { 'line-join': 'round', 'line-cap': 'round' } });
         }
 
-        if (!map.getLayer(layerId)) {
-          map.addLayer({
-            id: layerId,
-            type: 'line',
-            source: sourceId,
-            paint: { 'line-color': route.color, 'line-width': 4, 'line-opacity': 0.9 },
-            layout: { 'line-join': 'round', 'line-cap': 'round' },
-          });
+        // Return leg — dashed, lower opacity, offset the other way
+        const revSrcId = `route-src-${route.id}-rev`;
+        const revLayerId = `route-line-${route.id}-rev`;
+        const revGeoJson = { type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: geoPair.reverse } };
+        const revSrc = map.getSource(revSrcId) as maplibregl.GeoJSONSource;
+        if (revSrc) revSrc.setData(revGeoJson);
+        else map.addSource(revSrcId, { type: 'geojson', data: revGeoJson });
+        if (!map.getLayer(revLayerId)) {
+          map.addLayer({ id: revLayerId, type: 'line', source: revSrcId,
+            paint: { 'line-color': route.color, 'line-width': 2.5, 'line-opacity': 0.4, 'line-offset': -3,
+              'line-dasharray': [4, 3] },
+            layout: { 'line-join': 'round', 'line-cap': 'round' } });
         }
       }
     };
 
     if (map.isStyleLoaded()) drawRoutes();
     else { map.once('load', drawRoutes); map.once('style.load', drawRoutes); }
-  }, [routes, stops, routeGeometries]);
+  }, [routes, routeGeometries]);
 
   // ── Draw / update stop markers + demand bubbles ────────────
   useEffect(() => {
@@ -210,6 +218,16 @@ export function BusMap() {
         const marker = stopMarkersRef.current.get(stop.id)!;
         const el = marker.getElement();
         applyStopMarkerStyle(el, isOverloaded, stop.isTerminus);
+        // Hover-highlight for surge preview
+        if (stop.id === hoveredSurgeStopId) {
+          el.style.boxShadow = '0 0 0 6px rgba(239,68,68,0.5), 0 0 16px 4px rgba(239,68,68,0.3)';
+          el.style.transform = 'scale(1.5)';
+          el.style.zIndex = '100';
+        } else {
+          el.style.boxShadow = '';
+          el.style.transform = '';
+          el.style.zIndex = '';
+        }
         marker.setLngLat(markerCoords);
         marker.getPopup()?.setHTML(buildStopPopup(stop, totalDemand, isOverloaded, demandSnapshots));
         continue;
@@ -232,7 +250,7 @@ export function BusMap() {
 
       stopMarkersRef.current.set(stop.id, marker);
     }
-  }, [stops, demandSnapshots, routeSnappedWaypoints, routes]);
+  }, [stops, demandSnapshots, routeSnappedWaypoints, routes, hoveredSurgeStopId]);
 
   // ── Draw / update bus markers ──────────────────────────────
   useEffect(() => {
@@ -248,12 +266,25 @@ export function BusMap() {
     }
 
     for (const bus of Object.values(buses)) {
+      // Hide WAITING_AT_TERMINUS buses (they'll appear once dispatched)
+      if (bus.status === 'WAITING_AT_TERMINUS') {
+        // If there's already a marker, remove it
+        if (busMarkersRef.current.has(bus.id)) {
+          busMarkersRef.current.get(bus.id)!.remove();
+          busMarkersRef.current.delete(bus.id);
+        }
+        continue;
+      }
+
       const currentRoute = routes[bus.currentRouteId ?? ''];
       const homeRoute = routes[bus.homeRouteId ?? bus.currentRouteId ?? ''];
       const isRerouted = bus.homeRouteId != null && bus.homeRouteId !== bus.currentRouteId;
       const isSelected = bus.id === selectedBusId;
       const displayRouteId = currentRoute?.id ?? homeRoute?.id;
-      const displayPosition = resolveBusDisplayPosition(bus, displayRouteId ? routeGeometries[displayRouteId] : undefined);
+      const geoPair = displayRouteId ? routeGeometries[displayRouteId] : undefined;
+      // Use the direction-aware geometry
+      const displayCoords = bus.direction === -1 ? geoPair?.reverse : geoPair?.forward;
+      const displayPosition = resolveBusDisplayPosition(bus, displayCoords);
       if (!displayPosition) continue;
 
       // Bus color = home route color (not status)

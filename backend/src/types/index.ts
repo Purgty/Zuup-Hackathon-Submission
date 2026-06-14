@@ -38,6 +38,7 @@ export type VehicleType =
 
 export type BusStatus =
   | 'IN_SERVICE'
+  | 'WAITING_AT_TERMINUS'
   | 'REROUTING'
   | 'SHORT_SERVICE'
   | 'RESERVE'
@@ -134,6 +135,8 @@ export interface BusVehicle {
   nextStopId: string | null;
   // Position along route: 0.0 to 1.0
   positionFraction: number;
+  /** 1 = travelling forward (A→B), -1 = return leg (B→A) */
+  direction: 1 | -1;
   occupancyCount: number;
   occupancyPct: number;
   status: BusStatus;
@@ -146,6 +149,12 @@ export interface BusVehicle {
   lastGpsUpdate: number; // unix ms
   gpsStale: boolean;
   onboardManifest: Record<string, number>; // destinationStopId -> count
+  /** When REROUTING: the fraction on the CURRENT route where the bus will exit */
+  rerouteExitFractionOnCurrent: number | null;
+  /** When REROUTING: the target route to switch to */
+  rerouteTargetRouteId: string | null;
+  /** When REROUTING: the fraction on the TARGET route where the bus will enter */
+  rerouteEntryFractionOnTarget: number | null;
 }
 
 export interface Driver {

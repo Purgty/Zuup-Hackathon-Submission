@@ -1,0 +1,274 @@
+# ZUUP — Demo Refinement Implementation Plan
+
+## Goal
+
+Transform the current simulation into a fully self-explanatory live demo. A first-time viewer must be able to understand the entire bus demand-response system within 2 minutes of watching, without any prior knowledge of the app.
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> **Bidirectional routes**: Each route currently goes A→B. The return journey B→A uses the same road network. Should the return buses be:
+> - **Option A**: New buses that start at terminus B and travel back to A (making it truly bidirectional with 6 buses per route showing both directions)  
+> - **Option B**: The same buses loop back — when they reach terminus B, they reverse and drive back to A (like a real bus service)
+>
+> **Recommendation**: Option B is more realistic and avoids spawning too many buses on screen.
+
+> [!IMPORTANT]
+> **Reserve bus count**: How many reserve buses should exist per route? Currently there are 0 in `RESERVE` status. A reserve fleet of 1-2 buses total (parked at a depot stop) would be ideal for the demo. Where should the depot/reserve stop be shown on the map?
+
+> [!IMPORTANT]
+> **Demo speed**: Should the simulation run at realistic speed (10-15 min between buses) or at an accelerated demo speed (buses take ~2-3 minutes to traverse the full route)? Currently the full route takes ~11 minutes at `positionFraction += 0.003` per 2s tick.
+
+---
+
+## Proposed Changes
+
+---
+
+### Phase 1 — Staged Bus Dispatch (Backend: SimulatorService.ts)
+
+**Problem**: All buses spawn at pre-calculated positions. A demo viewer sees buses already mid-route, which is confusing.
+
+**Fix**: All buses start at their route's terminus (`positionFraction = 0.0`, `status = 'WAITING_AT_TERMINUS'`) and are dispatched in sequence with a headway interval.
+
+#### [MODIFY] [SimulatorService.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/services/SimulatorService.ts)
+
+- Add new `BusStatus` value `WAITING_AT_TERMINUS` for buses queued to depart.
+- Change `initializeBuses()` to spawn all buses at `positionFraction = 0.0` with status `WAITING_AT_TERMINUS`.
+- Add `dispatchBus(busId)` method that changes status to `IN_SERVICE` and starts the bus moving.
+- Add dispatch scheduler logic:
+  - Dispatch **Bus 1** immediately on start.
+  - Dispatch **Bus 2** when Bus 1 crosses fraction `0.5` (halfway).
+  - Dispatch **Bus 3** when Bus 2 crosses fraction `0.5`.
+  - Repeat for all routes.
+- Add bidirectional loop logic: when a bus reaches `positionFraction >= 1.0`, reverse its direction (`direction = -1`) and have it travel back to 0.0, then wrap again. This creates a continuous back-and-forth on the same OSRM geometry.
+- Add **reserve bus** initialization: one bus per route initialized at the terminus with `status = 'RESERVE'`.
+
+#### [MODIFY] [types/index.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/types/index.ts)
+- Add `'WAITING_AT_TERMINUS'` to `BusStatus` union type.
+- Add `direction: 1 | -1` to `BusVehicle` interface (forward vs. return leg).
+
+---
+
+### Phase 2 — Bidirectional Route Rendering (Frontend: BusMap.tsx)
+
+**Problem**: Each route is drawn as a single line A→B. Return-direction buses have no corresponding visible track.
+
+**Fix**: Fetch **two** OSRM routes per logical route — one A→B and one B→A — and draw them as parallel offset lines.
+
+#### [MODIFY] [BusMap.tsx](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/dashboard/src/components/Map/BusMap.tsx)
+
+- Change route geometry fetch to fetch `forward` (stops in order) and `return` (stops reversed) for each route.
+- Store both as `routeGeometries[routeId].forward` and `routeGeometries[routeId].return`.
+- Draw both lines on the map with a slight pixel offset (MapLibre `line-offset: 3`) so they sit side-by-side on the road without overlapping. Return leg drawn slightly lighter/dashed.
+- `resolveBusDisplayPosition()` checks bus `direction` to use the `forward` or `return` geometry.
+
+#### [MODIFY] [BusVehicle type (dashboard/src/types.ts)](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/dashboard/src/types.ts)
+- Add `direction?: 1 | -1` field to match backend.
+
+---
+
+### Phase 3 — Interactive Crowd Injection with Map Hover (Frontend + Backend)
+
+**Problem**: The current "Trigger Surge" button injects crowd at a hardcoded stop, with no visual feedback about *where* the crowd is going.
+
+**Fix**: Replace the button with a stop-picker dropdown, and highlight the chosen stop on the map on hover.
+
+#### [MODIFY] [SimulationPanel.tsx](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/dashboard/src/components/Simulation/SimulationPanel.tsx)
+
+- Replace the hardcoded "Trigger Surge" button with a **stop selector** UI:
+  - Dropdown/list of all stops with their route labels.
+  - A crowd size slider (10 / 25 / 50 passengers).
+  - On hover over a stop in the list → emit a `hoveredSurgeStop` event to the map.
+  - On click → call the updated API endpoint with `{ stopId, routeId, count }`.
+
+#### [MODIFY] [BusMap.tsx](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/dashboard/src/components/Map/BusMap.tsx)
+
+- Subscribe to `hoveredSurgeStop` from store.
+- When a stop is hovered in the panel → render a pulsing highlight ring around that stop marker on the map (CSS animation, `demandPulse`).
+- When `null` → remove the highlight.
+
+#### [MODIFY] [operator.routes.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/routes/operator.routes.ts)
+
+- Extend `POST /simulate/surge` to accept body `{ stopId: string, routeId: string, count: number }` instead of hardcoded values.
+
+#### [MODIFY] [SimulatorService.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/services/SimulatorService.ts)
+- Update `triggerSurge()` signature to accept `{ stopId, routeId, count }`.
+
+---
+
+### Phase 4 — Realistic Cross-Route Rerouting via Road Intersection (Backend: RerouteEngine.ts)
+
+**Problem**: When a bus is rerouted, it teleports to `positionFraction = 0.0` on the new route. This is completely unrealistic.
+
+**Fix**: When a bus is rerouted from Route A to Route B, it must:
+1. **Drive to the nearest intersection** between Route A and Route B using its current OSRM path.
+2. **At that intersection**, switch to Route B's OSRM geometry at the matching fraction.
+3. **Continue on Route B** from the intersection point forward.
+
+This requires finding the geographic intersection or closest-approach point between two OSRM polylines.
+
+#### [MODIFY] [SimulatorService.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/services/SimulatorService.ts)
+
+- Add `findRouteIntersection(routeIdA, routeIdB): { fractionOnA: number, fractionOnB: number } | null` method.
+  - Iterates through all coordinate pairs on route A and route B using brute-force closest-point check (sufficient for small networks of ~200-400 OSRM points).
+  - Returns the fraction on A where the bus should exit, and the fraction on B where it should enter.
+- Add `commitReroute(busId, toRouteId)` method:
+  - Sets `bus.rerouteTargetRouteId = toRouteId`.
+  - Sets `bus.rerouteIntersectionFractionA` = the fraction where the bus exits Route A.
+  - Sets `bus.rerouteIntersectionFractionB` = the fraction where the bus enters Route B.
+  - Sets `bus.status = 'REROUTING'` (bus is still driving but now heading to the intersection).
+- Modify `tick()`:
+  - If bus is `REROUTING` and its `positionFraction` has not yet reached `rerouteIntersectionFractionA`, advance normally on Route A.
+  - When `positionFraction >= rerouteIntersectionFractionA`:
+    - Switch `bus.currentRouteId = bus.rerouteTargetRouteId`
+    - Set `bus.positionFraction = bus.rerouteIntersectionFractionB`
+    - Set `bus.status = 'IN_SERVICE'`
+    - Clear the reroute fields.
+    - Emit `REROUTE_COMMITTED` event.
+
+#### [MODIFY] [RerouteEngine.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/services/RerouteEngine.ts)
+
+- `driverConfirm()` no longer teleports the bus. Instead, calls `simulatorService.commitReroute()`.
+
+#### [MODIFY] [types/index.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/types/index.ts)
+- Add fields to `BusVehicle`:
+  - `rerouteTargetRouteId: string | null`
+  - `rerouteIntersectionFractionA: number | null`
+  - `rerouteIntersectionFractionB: number | null`
+
+---
+
+### Phase 5 — Reserve Bus Priority Protocol (Backend: RerouteEngine.ts)
+
+**Problem**: Reserve buses exist in the type system (`status = 'RESERVE'`) but the RerouteEngine's Step 4 sends them directly to overloaded routes without visualizing anything meaningful.
+
+**Fix**: Implement a proper reserve bus activation flow:
+
+**Reserve Bus Logic:**
+1. When surge is detected, **first** check for RESERVE buses on the same or nearby routes.
+2. If a reserve bus exists:
+   - Activate it: `status → IN_SERVICE`, place it at the route's terminus (`positionFraction = 0.0`), dispatch it.
+   - Issue a **Tier 2** alert: "Reserve bus deployed to Route X to handle surge."
+   - Continue monitoring: if the reserve bus has been in service long enough and demand is satisfied, run the **return-to-reserve check**.
+3. **Only if no reserve bus is available** → escalate to Step 5 cross-route reallocation.
+
+**Return-to-Reserve Check (new method `evaluateReserveReturn()`):**
+- Called 90s after reserve bus deployment.
+- Checks: does the route's remaining demand + existing bus headway handle the load without the reserve?
+  - If YES → issue instruction to return reserve to depot (`status = 'RESERVE'`, bus drives to terminus, parks there).
+  - If NO → reserve bus continues in service.
+
+#### [MODIFY] [RerouteEngine.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/services/RerouteEngine.ts)
+
+- `evaluateResponseHierarchy()`:
+  - Step 4 (Express Overlay) now uses **route-matched** reserve preference: prefer reserve buses whose `homeRouteId` matches the target route.
+  - If no route-matched reserve, fall back to any available reserve.
+  - After dispatching, schedule `evaluateReserveReturn(busId, routeId)` for 90s later.
+- Add `evaluateReserveReturn(busId, routeId)`:
+  - Get current demand snapshot for all stops on the route.
+  - Get count of active (non-reserve) buses on the route.
+  - Calculate if headway × capacity ≥ total demand.
+  - If yes: send reserve home. If no: keep it in service.
+
+#### [MODIFY] [SimulatorService.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/services/SimulatorService.ts)
+- Add `sendBusToReserve(busId)`:
+  - Sets `bus.status = 'RESERVE'`.
+  - Sets `bus.positionFraction = 0.0` (or drives to closest terminus).
+  - Removes it from the dispatch queue.
+
+---
+
+### Phase 6 — Cross-Route Reallocation Eligibility: Remaining Stops Passenger Check
+
+**Problem**: Currently, a bus can be pulled from any route at any time regardless of how many passengers are still on board heading to downstream stops.
+
+**Fix** (already exists as `onBoardPassengerCheck` in `rerouteChecks.ts` but needs to be enforced):
+
+- The check must verify: are all remaining stops on Route A (after the intersection exit point) either empty or served by another bus within an acceptable wait time?
+- If passengers would be stranded: the bus finishes its current stop sequence up to the intersection point, then transfers.
+
+This is largely already implemented in `onBoardPassengerCheck`. The key gap is that it needs to know the **intersection fraction** to assess only the *remaining* stops, not all stops.
+
+#### [MODIFY] [rerouteChecks.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/algorithms/rerouteChecks.ts)
+- Pass `exitFraction` to `onBoardPassengerCheck` to evaluate only stops beyond the exit point.
+
+---
+
+### Phase 7 — Demand Dissipation (Backend: CheckInLifecycleManager.ts)
+
+**Problem**: After buses arrive at a surge stop, the check-ins remain `ACTIVE` forever. Demand never visually clears.
+
+**Fix**: When a bus passes through an overloaded stop:
+- Mark `N` check-ins at that stop as `BOARDED` where `N = bus.availableCapacity`.
+- Mark any remaining check-ins as `ACTIVE` (still waiting for the next bus).
+- Update `demandSnapshots` after each bus passage.
+
+This provides the visual feedback of demand being "served" after a bus arrives.
+
+#### [MODIFY] [SimulatorService.ts](file:///c:/Users/aswin/OneDrive/Desktop/Zuup%20Hackathon%20Submission/backend/src/services/SimulatorService.ts)
+- In `tick()`, detect when `bus.currentStopId` changes to a new stop → call `processStopArrival(busId, stopId)`.
+- `processStopArrival()`:
+  - Find all `ACTIVE` check-ins at this stop for this route.
+  - Board up to `bus.availableCapacity` passengers.
+  - Update occupancy.
+  - Publish `DEMAND_UPDATED` event.
+
+---
+
+## Edge Cases Covered
+
+| # | Edge Case | Handling |
+|---|-----------|----------|
+| EC-1 | **No OSRM intersection found** between two routes | Fall back to closest geographic point; if still too far (>500m), bus is ineligible for cross-route rerouting |
+| EC-2 | **Reserve bus already in service** when a second surge fires | Reserve treated as IN_SERVICE — skip to Step 5 cross-route reallocation |
+| EC-3 | **Bus reaches terminus before intersection** | Bus loops back (bidirectional), recalculate intersection on return leg |
+| EC-4 | **Driver rejects reroute instruction** | Cancel reroute order, increment `rerouteRejectionsToday`, escalate alert to Tier 1 |
+| EC-5 | **Multiple simultaneous surges** | Each processed independently via `activeProcessing` set; reserve can only be used once |
+| EC-6 | **Rerouted bus reaches end of new route** | Bus completes the new route, then returns to `homeRouteId` via natural terminus loop |
+| EC-7 | **Surge clears before bus arrives** | `evaluateReserveReturn()` detects demand resolution and sends bus back before it even reaches the stop |
+| EC-8 | **All buses REROUTING status** (network deadlock) | RerouteEngine has `cascadeCheck` to prevent this; at least `minBusesInService` buses must remain per route |
+| EC-9 | **Hover stop in SimulationPanel with map not loaded** | Guard with null check; highlight queued until map is ready |
+| EC-10 | **Return-leg bus at wrong fraction on new route** | Fraction is clamped to [0,1] and validated against route geometry length before assignment |
+
+---
+
+## Verification Plan
+
+### Automated (Backend)
+```bash
+# From backend directory
+npx ts-node src/database/seed.ts   # verify clean seed
+npx ts-node -e "require('./src/services/SimulatorService')" # verify no TS errors
+```
+
+### Manual Demo Walkthrough (Frontend)
+1. Start server → observe all buses at `WAITING_AT_TERMINUS` (parked at start stop)
+2. Wait 10s → Bus 1 departs, drives the route
+3. Wait until Bus 1 is at 50% → Bus 2 departs
+4. Wait until Bus 2 is at 50% → Bus 3 departs
+5. Observe bidirectional lines (both directions visible on map)
+6. Hover over stops in SimulationPanel → correct stop pulses on map
+7. Inject crowd at a specific stop
+8. Observe: Reserve bus dispatched → drives to overloaded stop
+9. Wait 90s → demand checker runs → reserve returns to depot (or stays if still needed)
+10. If demand too high even with reserve: observe a bus from another route driving to intersection point → transferring to overloaded route naturally
+11. After demand clears: transferred bus returns to home route
+
+---
+
+## File Change Summary
+
+| File | Change Type |
+|------|------------|
+| `backend/src/types/index.ts` | Add `WAITING_AT_TERMINUS` to `BusStatus`, add `direction`, reroute interim fields to `BusVehicle` |
+| `backend/src/services/SimulatorService.ts` | Staged dispatch, bidirectional OSRM, intersection finder, stop arrival processing |
+| `backend/src/services/RerouteEngine.ts` | Reserve priority, return-to-reserve scheduling |
+| `backend/src/algorithms/rerouteChecks.ts` | Exit-fraction aware onboard check |
+| `backend/src/routes/operator.routes.ts` | Accept `{ stopId, routeId, count }` for surge endpoint |
+| `dashboard/src/types.ts` | Add `direction` field |
+| `dashboard/src/components/Map/BusMap.tsx` | Bidirectional line rendering, hover highlight |
+| `dashboard/src/components/Simulation/SimulationPanel.tsx` | Stop picker, crowd size control |
+| `dashboard/src/store/useStore.ts` | Add `hoveredSurgeStopId` state |

@@ -2,7 +2,7 @@
 // in a future integration
 
 export type CheckInState = 'ACTIVE' | 'PENDING' | 'BOARDING' | 'BOARDED' | 'ABANDONED' | 'EXPIRED' | 'SERVED';
-export type BusStatus = 'IN_SERVICE' | 'REROUTING' | 'SHORT_SERVICE' | 'RESERVE' | 'DEPOT' | 'BREAKDOWN' | 'SHIFT_CHANGE';
+export type BusStatus = 'IN_SERVICE' | 'WAITING_AT_TERMINUS' | 'REROUTING' | 'SHORT_SERVICE' | 'RESERVE' | 'DEPOT' | 'BREAKDOWN' | 'SHIFT_CHANGE';
 export type RerouteStatus = 'RECOMMENDED' | 'PENDING_DRIVER' | 'SOFT_COMMITTED' | 'COMMITTED' | 'COMPLETED' | 'CANCELLED' | 'REJECTED' | 'REVERSED';
 export type AlertTier = 1 | 2 | 3;
 
@@ -44,6 +44,8 @@ export interface BusVehicle {
   currentStopId: string | null;
   nextStopId: string | null;
   positionFraction: number;
+  /** 1 = outbound (A→B), -1 = return leg (B→A) */
+  direction?: 1 | -1;
   occupancyCount: number;
   occupancyPct: number;
   status: BusStatus;
@@ -55,6 +57,9 @@ export interface BusVehicle {
   lastGpsUpdate: number;
   gpsStale: boolean;
   onboardManifest: Record<string, number>;
+  rerouteExitFractionOnCurrent?: number | null;
+  rerouteTargetRouteId?: string | null;
+  rerouteEntryFractionOnTarget?: number | null;
 }
 
 export interface StopDemandSnapshot {

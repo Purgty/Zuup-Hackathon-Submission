@@ -81,15 +81,45 @@ export class RerouteEngine {
     // Simplified: checked by looking for a bus near terminus with no passengers continuing
     console.log('  Step 3 (Short-turn) → No bus near terminus, continue');
 
-    // ── Step 4: Express Overlay ───────────────────────────────
-    // Check for reserve buses (status = RESERVE)
-    const reserveBus = allBuses.find((b) => b.status === 'RESERVE');
-    if (reserveBus) {
-      console.log(`  Step 4 → EXPRESS OVERLAY: Reserve bus ${reserveBus.id} available`);
-      await this.generateRerouteRecommendation(stop, route, [reserveBus]);
+    // ── Step 4: Express Overlay (Nearest Reserve) ──────────────
+    // Use SimulatorService to find the closest reserve bus to the surge stop.
+    // This prefers the reserve at whichever terminus is geographically nearer,
+    // avoiding the anti-pattern of sending a bus from the far end of the route.
+    const { simulatorService } = await import('./SimulatorService');
+    const reserveChoice = simulatorService.findClosestReserveForSurge(routeId, stopId);
+
+    if (reserveChoice) {
+      const reserveBus = stateStore.buses.get(reserveChoice.busId);
+      const terminusLabel = reserveChoice.startDirection === 1 ? 'start terminus' : 'end terminus';
+      console.log(
+        `  Step 4 → EXPRESS OVERLAY: ${reserveBus?.registrationNo} dispatched from ${terminusLabel} to ${route.shortCode}`
+      );
+
+      simulatorService.activateReserveBus(
+        reserveChoice.busId,
+        routeId,
+        reserveChoice.startFraction,
+        reserveChoice.startDirection
+      );
+
+      this.issueAlert({
+        tier: 2,
+        title: `Reserve Bus Deployed — ${reserveBus?.registrationNo}`,
+        message: `${reserveBus?.registrationNo} dispatched from ${terminusLabel} on ${route.name} ` +
+          `to cover surge at "${stop.name}". Chosen because it is the nearest available reserve.`,
+        type: 'REROUTE_RECOMMENDED',
+      });
+
+      eventBus.publish(
+        EVENTS.SIMULATION_LOG,
+        `✅ Reserve ${reserveBus?.registrationNo} (${terminusLabel}) → nearest to "${stop.name}" on ${route.shortCode}.`
+      );
+
+      // Schedule return-to-reserve evaluation after 90s
+      setTimeout(() => this.evaluateReserveReturn(reserveChoice.busId, routeId), 90_000);
       return;
     }
-    console.log('  Step 4 (Express overlay) → No reserve bus, continue');
+    console.log('  Step 4 (Express overlay) → No reserve bus available, escalating to cross-route reallocation');
 
     // ── Step 5: Cross-Route Reallocation ─────────────────────
     console.log('  Step 5 → Running cross-route reallocation pipeline...');
@@ -283,8 +313,8 @@ export class RerouteEngine {
     return { success: true };
   }
 
-  /** Driver confirms the reroute */
-  private async driverConfirm(orderId: string, driverId: string): Promise<void> {
+  /** Driver confirms the reroute — bus now physically drives to intersection */
+  private async driverConfirm(orderId: string, _driverId: string): Promise<void> {
     const order = stateStore.rerouteOrders.get(orderId);
     if (!order || order.status !== 'PENDING_DRIVER') return;
 
@@ -294,21 +324,32 @@ export class RerouteEngine {
 
     const bus = stateStore.buses.get(order.busId);
     if (bus) {
-      bus.status = 'REROUTING';
-      // Preserve the original home route if not already set
+      // Preserve original home route
       if (!bus.homeRouteId) bus.homeRouteId = bus.currentRouteId;
-      bus.currentRouteId = order.toRouteId;
       bus.activeRerouteId = order.id;
+
+      // Commit reroute through SimulatorService so the bus drives to the intersection
+      const { simulatorService } = await import('./SimulatorService');
+      const committed = simulatorService.commitReroute(bus.id, order.toRouteId);
+
+      if (!committed) {
+        // No valid intersection — fallback: just join at start of new route
+        bus.status = 'IN_SERVICE';
+        bus.currentRouteId = order.toRouteId;
+        bus.positionFraction = 0.0;
+        bus.direction = 1 as const;
+      }
+
       stateStore.buses.set(bus.id, bus);
     }
 
     stateStore.rerouteOrders.set(orderId, order);
     eventBus.publish(EVENTS.REROUTE_CONFIRMED, order);
     eventBus.publish(EVENTS.REROUTE_STATUS_CHANGED, order);
-    console.log(`✅ Driver confirmed reroute ${orderId}`);
+    console.log(`✅ Driver confirmed reroute ${orderId} — bus heading to intersection`);
 
-    // Complete the reroute after a simulated travel time
-    setTimeout(() => this.completeReroute(orderId), 30_000);
+    // Complete order after simulated travel time
+    setTimeout(() => this.completeReroute(orderId), 45_000);
   }
 
   private completeReroute(orderId: string): void {
@@ -316,11 +357,15 @@ export class RerouteEngine {
     if (!order) return;
 
     order.status = 'COMPLETED';
-    order.demandActualAtArrival = order.demandAtRecommendation * 0.8; // simulated
+    order.demandActualAtArrival = order.demandAtRecommendation * 0.8;
 
     const bus = stateStore.buses.get(order.busId);
-    if (bus) {
+    if (bus && bus.status !== 'IN_SERVICE') {
+      // Only reset if still in rerouting state (not already flipped by SimulatorService)
       bus.status = 'IN_SERVICE';
+      bus.activeRerouteId = null;
+      stateStore.buses.set(bus.id, bus);
+    } else if (bus) {
       bus.activeRerouteId = null;
       stateStore.buses.set(bus.id, bus);
     }
@@ -336,6 +381,50 @@ export class RerouteEngine {
       rerouteOrderId: order.id,
     });
     console.log(`✅ Reroute ${orderId} COMPLETED`);
+  }
+
+  /**
+   * Evaluate whether a reserve bus that was deployed should return to reserve.
+   * Called 90s after reserve activation.
+   * If the route's existing non-reserve buses can handle the current demand, send bus back.
+   */
+  private async evaluateReserveReturn(busId: string, routeId: string): Promise<void> {
+    const bus = stateStore.buses.get(busId);
+    const route = stateStore.routes.get(routeId);
+    if (!bus || !route || bus.status === 'RESERVE') return; // already returned
+
+    // Total demand still active on this route
+    const totalDemand = route.stops.reduce((sum, stopId) => {
+      const snap = stateStore.demandSnapshots.get(`${stopId}:${routeId}`);
+      return sum + (snap?.totalDemand ?? 0);
+    }, 0);
+
+    // How many non-reserve buses are active on this route?
+    const activeBuses = [...stateStore.buses.values()].filter(
+      b => b.currentRouteId === routeId && b.status === 'IN_SERVICE' && b.id !== busId
+    );
+
+    // Rough headway capacity: each bus can serve ~totalCapacity × 0.8 passengers per cycle
+    const coverageCapacity = activeBuses.length * 60 * 0.8;
+
+    if (totalDemand <= coverageCapacity) {
+      console.log(`  Reserve return: demand ${totalDemand.toFixed(0)} ≤ capacity ${coverageCapacity.toFixed(0)} → returning ${bus.registrationNo} to reserve`);
+      eventBus.publish(EVENTS.SIMULATION_LOG, `Demand on ${route.shortCode} normalised. Reserve bus ${bus.registrationNo} returning to depot.`);
+      const { simulatorService } = await import('./SimulatorService');
+      simulatorService.sendBusToReserve(busId);
+
+      this.issueAlert({
+        tier: 3,
+        title: `Reserve Bus Returned`,
+        message: `Demand on ${route.name} has normalised. Bus ${bus.registrationNo} returned to reserve fleet.`,
+        type: 'DEMAND_RESOLVED',
+      });
+    } else {
+      console.log(`  Reserve return: demand ${totalDemand.toFixed(0)} > capacity ${coverageCapacity.toFixed(0)} → keeping ${bus.registrationNo} in service`);
+      eventBus.publish(EVENTS.SIMULATION_LOG, `Demand on ${route.shortCode} still elevated. Reserve bus ${bus.registrationNo} remains in service.`);
+      // Re-check in another 60s
+      setTimeout(() => this.evaluateReserveReturn(busId, routeId), 60_000);
+    }
   }
 
   private issueAlert(params: {

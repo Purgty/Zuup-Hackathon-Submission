@@ -24,6 +24,8 @@ interface ZuupStore {
   showDemandHeatmap: boolean;
   sidebarTab: 'alerts' | 'fleet' | 'routes';
   simulationLogs: Array<{ time: string; message: string }>;
+  /** Stop ID being previewed in SimulationPanel's surge stop selector */
+  hoveredSurgeStopId: string | null;
 
   // Actions
   setInitialState: (payload: any) => void;
@@ -38,6 +40,7 @@ interface ZuupStore {
   setSidebarTab: (tab: 'alerts' | 'fleet' | 'routes') => void;
   toggleDemandHeatmap: () => void;
   addSimulationLog: (msg: string) => void;
+  setHoveredSurgeStopId: (id: string | null) => void;
 }
 
 export const useStore = create<ZuupStore>((set) => ({
@@ -57,6 +60,7 @@ export const useStore = create<ZuupStore>((set) => ({
   selectedRouteId: null,
   showDemandHeatmap: true,
   sidebarTab: 'alerts',
+  hoveredSurgeStopId: null,
 
   addSimulationLog: (msg) => set((state) => ({
     simulationLogs: [...state.simulationLogs, { time: new Date().toLocaleTimeString(), message: msg }].slice(-50),
@@ -150,4 +154,5 @@ export const useStore = create<ZuupStore>((set) => ({
   selectRoute: (routeId) => set({ selectedRouteId: routeId }),
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
   toggleDemandHeatmap: () => set((state) => ({ showDemandHeatmap: !state.showDemandHeatmap })),
+  setHoveredSurgeStopId: (id) => set({ hoveredSurgeStopId: id }),
 }));
