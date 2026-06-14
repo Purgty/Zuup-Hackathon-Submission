@@ -279,7 +279,8 @@ export class SimulatorService {
     busId: string,
     routeId: string,
     startFraction: number = 0.0,
-    startDirection: 1 | -1 = 1
+    startDirection: 1 | -1 = 1,
+    travelCost: number | null = null
   ): void {
     const bus = stateStore.buses.get(busId);
     const geo = this.osrm[routeId];
@@ -289,6 +290,7 @@ export class SimulatorService {
     bus.currentRouteId = routeId;
     bus.positionFraction = startFraction;
     bus.direction = startDirection;
+    bus.activeRerouteDistance = travelCost;
 
     const pos = this.getBusPosition(geo, startFraction, startDirection);
     bus.lat = pos.lat;
@@ -319,7 +321,7 @@ export class SimulatorService {
   findClosestReserveForSurge(
     routeId: string,
     surgeStopId: string
-  ): { busId: string; startFraction: number; startDirection: 1 | -1 } | null {
+  ): { busId: string; startFraction: number; startDirection: 1 | -1; travelCost: number } | null {
     const route = stateStore.routes.get(routeId);
     if (!route) return null;
 
@@ -371,8 +373,12 @@ export class SimulatorService {
       `  🎯 Nearest reserve for stop at fraction ${surgeFraction.toFixed(2)}: ` +
       `${winner?.registrationNo} from ${label} terminus (travel cost: ${bestReserve.travelCost.toFixed(2)})`
     );
-
-    return { busId: bestReserve.busId, startFraction: bestReserve.startFraction, startDirection: bestReserve.startDirection };
+    return { 
+      busId: bestReserve.busId, 
+      startFraction: bestReserve.startFraction, 
+      startDirection: bestReserve.startDirection,
+      travelCost: bestReserve.travelCost
+    };
   }
 
   /** Called by RerouteEngine to send reserve bus back to reserve status.

@@ -49,7 +49,9 @@ export interface BusVehicle {
   occupancyCount: number;
   occupancyPct: number;
   status: BusStatus;
+  isReserve?: boolean;
   activeRerouteId: string | null;
+  activeRerouteDistance?: number | null;
   currentDriverId: string;
   lat: number;
   lng: number;

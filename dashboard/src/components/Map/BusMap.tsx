@@ -135,34 +135,69 @@ export function BusMap() {
         // Forward leg — solid, full opacity, slight right-offset
         const fwdSrcId = `route-src-${route.id}-fwd`;
         const fwdLayerId = `route-line-${route.id}-fwd`;
+        const fwdArrowId = `route-arrow-${route.id}-fwd`;
         const fwdGeoJson = { type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: geoPair.forward } };
         const fwdSrc = map.getSource(fwdSrcId) as maplibregl.GeoJSONSource;
         if (fwdSrc) fwdSrc.setData(fwdGeoJson);
         else map.addSource(fwdSrcId, { type: 'geojson', data: fwdGeoJson });
+        
         if (!map.getLayer(fwdLayerId)) {
           map.addLayer({ id: fwdLayerId, type: 'line', source: fwdSrcId,
             paint: { 'line-color': route.color, 'line-width': 4, 'line-opacity': 0.9, 'line-offset': 3 },
             layout: { 'line-join': 'round', 'line-cap': 'round' } });
         }
+        if (!map.getLayer(fwdArrowId)) {
+          map.addLayer({ id: fwdArrowId, type: 'symbol', source: fwdSrcId,
+            layout: { 'symbol-placement': 'line', 'text-field': '▶', 'text-size': 10, 'symbol-spacing': 100, 'text-keep-upright': false },
+            paint: { 'text-color': '#ffffff' } });
+        }
 
         // Return leg — dashed, lower opacity, offset the other way
         const revSrcId = `route-src-${route.id}-rev`;
         const revLayerId = `route-line-${route.id}-rev`;
+        const revArrowId = `route-arrow-${route.id}-rev`;
         const revGeoJson = { type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: geoPair.reverse } };
         const revSrc = map.getSource(revSrcId) as maplibregl.GeoJSONSource;
         if (revSrc) revSrc.setData(revGeoJson);
         else map.addSource(revSrcId, { type: 'geojson', data: revGeoJson });
+        
         if (!map.getLayer(revLayerId)) {
           map.addLayer({ id: revLayerId, type: 'line', source: revSrcId,
             paint: { 'line-color': route.color, 'line-width': 2.5, 'line-opacity': 0.4, 'line-offset': -3,
               'line-dasharray': [4, 3] },
             layout: { 'line-join': 'round', 'line-cap': 'round' } });
         }
+        if (!map.getLayer(revArrowId)) {
+          map.addLayer({ id: revArrowId, type: 'symbol', source: revSrcId,
+            layout: { 'symbol-placement': 'line', 'text-field': '▶', 'text-size': 8, 'symbol-spacing': 120, 'text-keep-upright': false },
+            paint: { 'text-color': route.color, 'text-opacity': 0.8 } });
+        }
       }
     };
 
     if (map.isStyleLoaded()) drawRoutes();
     else { map.once('load', drawRoutes); map.once('style.load', drawRoutes); }
+
+    // ── Animate flow on dashed return legs ──
+    let animationFrameId: number;
+    let step = 0;
+    const dashArraySequence = [
+      [0, 4, 3], [0.5, 3.5, 3], [1, 3, 3], [1.5, 2.5, 3],
+      [2, 2, 3], [2.5, 1.5, 3], [3, 1, 3], [3.5, 0.5, 3]
+    ];
+    const animateDashArray = () => {
+      step = (step + 1) % dashArraySequence.length;
+      for (const route of Object.values(routes)) {
+        const revLayerId = `route-line-${route.id}-rev`;
+        if (map.getLayer(revLayerId)) {
+          map.setPaintProperty(revLayerId, 'line-dasharray', dashArraySequence[step]);
+        }
+      }
+      animationFrameId = requestAnimationFrame(() => setTimeout(animateDashArray, 50));
+    };
+    animateDashArray();
+
+    return () => cancelAnimationFrame(animationFrameId);
   }, [routes, routeGeometries]);
 
   // ── Draw / update stop markers + demand bubbles ────────────
@@ -298,7 +333,7 @@ export function BusMap() {
       if (busMarkersRef.current.has(bus.id)) {
         const marker = busMarkersRef.current.get(bus.id)!;
         marker.setLngLat(displayPosition.coords);
-        applyBusMarkerStyle(marker.getElement(), busColor, isSelected, isRerouted, bus.occupancyPct, displayPosition.bearing, currentRoute?.color);
+        applyBusMarkerStyle(marker.getElement(), busColor, isSelected, isRerouted, bus.occupancyPct, displayPosition.bearing, currentRoute?.color, bus);
         // Update popup HTML
         const popup = marker.getPopup();
         if (popup) {
@@ -306,7 +341,7 @@ export function BusMap() {
         }
       } else {
         const el = document.createElement('div');
-        applyBusMarkerStyle(el, busColor, isSelected, isRerouted, bus.occupancyPct, displayPosition.bearing, currentRoute?.color);
+        applyBusMarkerStyle(el, busColor, isSelected, isRerouted, bus.occupancyPct, displayPosition.bearing, currentRoute?.color, bus);
 
         el.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -504,14 +539,16 @@ function applyBusMarkerStyle(
   occupancyPct: number,
   bearing: number,
   currentRouteColor?: string,
+  bus?: any // passing bus object for reserve checks
 ): void {
+  const isReserve = bus?.isReserve || bus?.registrationNo.includes('RSV');
   const borderStyle = isRerouted ? 'dashed' : 'solid';
   const borderColor = isSelected
     ? '#0F172A'
     : isRerouted
       ? (currentRouteColor ?? '#f59e0b')
-      : '#E2E8F0';
-  const borderWidth = isRerouted || isSelected ? '2px' : '1px';
+      : isReserve ? '#8b5cf6' : '#E2E8F0'; // Purple border for reserve
+  const borderWidth = isRerouted || isSelected || isReserve ? '2px' : '1px';
   const pointerColor = isSelected ? '#0F172A' : isRerouted ? (currentRouteColor ?? '#f59e0b') : homeColor;
 
   // ✅ el is MapLibre's anchor — only set dimensions, never position
@@ -560,7 +597,7 @@ function applyBusMarkerStyle(
     width: '100%',
     height: '100%',
     borderRadius: '6px',
-    background: homeColor,
+    background: isReserve ? '#8b5cf6' : homeColor, // purple bg for reserve
     border: `${borderWidth} ${borderStyle} ${borderColor}`,
     display: 'flex',
     alignItems: 'center',
@@ -604,6 +641,35 @@ function applyBusMarkerStyle(
 
   if (isRerouted) {
     inner.appendChild(buildRerouteBadge(currentRouteColor));
+  } else if (isReserve) {
+    const rBadge = document.createElement('span');
+    rBadge.className = 'reroute-badge';
+    rBadge.textContent = 'R';
+    Object.assign(rBadge.style, {
+      position: 'absolute', top: '-7px', right: '-7px',
+      background: '#8b5cf6', color: '#fff', borderRadius: '50%',
+      width: '14px', height: '14px', fontSize: '9px', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', fontWeight: '700',
+      border: '1px solid #fff',
+    });
+    inner.appendChild(rBadge);
+  }
+
+  // Floating label for travel cost
+  if (bus?.activeRerouteDistance != null) {
+    const costLabel = document.createElement('div');
+    costLabel.className = 'travel-cost-label';
+    costLabel.textContent = `Cost: ${bus.activeRerouteDistance.toFixed(2)}`;
+    Object.assign(costLabel.style, {
+      position: 'absolute', bottom: '-20px', left: '50%',
+      transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.7)',
+      color: '#fbbf24', padding: '2px 6px', borderRadius: '4px',
+      fontSize: '9px', fontWeight: 'bold', whiteSpace: 'nowrap',
+    });
+    inner.appendChild(costLabel);
+  } else {
+    const existingCost = inner.querySelector('.travel-cost-label');
+    if (existingCost) existingCost.remove();
   }
 
   el.appendChild(inner);
@@ -641,6 +707,7 @@ function buildBusPopup(
   rerouteOrder: any,
 ): string {
   const occupancyColor = bus.occupancyPct > 0.8 ? '#ef4444' : bus.occupancyPct > 0.55 ? '#f59e0b' : '#10b981';
+  const isReserve = bus.isReserve || bus.registrationNo.includes('RSV');
 
   if (isRerouted && homeRoute && currentRoute) {
     return `
@@ -658,10 +725,11 @@ function buildBusPopup(
   }
 
   return `
-    <div class="popup-title">🚌 ${bus.registrationNo}</div>
+    <div class="popup-title">🚌 ${bus.registrationNo} ${isReserve ? '<span style="color:#8b5cf6;font-size:12px;">(Reserve)</span>' : ''}</div>
     <div class="popup-row"><span>Route</span><strong style="color:${homeRoute?.color ?? '#6366f1'}">${homeRoute?.shortCode ?? '?'} — ${homeRoute?.name ?? ''}</strong></div>
     <div class="popup-row"><span>Occupancy</span><strong style="color:${occupancyColor}">${Math.round(bus.occupancyPct * 100)}%</strong></div>
     <div class="popup-row"><span>Status</span><strong>${bus.status.replace(/_/g, ' ')}</strong></div>
+    ${bus.activeRerouteDistance != null ? `<div class="popup-row"><span>Alg Travel Cost</span><strong style="color:#8b5cf6">${bus.activeRerouteDistance.toFixed(2)}</strong></div>` : ''}
   `;
 }
 
@@ -678,9 +746,21 @@ function buildStopPopup(
   const snapshots = stop.routesServing.map((rid: string) => demandSnapshots[`${stop.id}:${rid}`]).filter(Boolean);
   const nextEta = snapshots.length > 0 ? Math.min(...snapshots.map((s: any) => s.nextBusEtaMin)) : null;
 
+  // Aggregate explicit demand components
+  const schedDemand = snapshots.reduce((sum: number, s: any) => sum + (s.scheduledDemand || 0), 0);
+  const surgeDemand = snapshots.reduce((sum: number, s: any) => sum + (s.latentDemand || 0), 0);
+
   return `
     <div class="popup-title">${stop.name}${isOverloaded ? ' 🔴' : ''}</div>
-    <div class="popup-row"><span>Waiting</span><strong style="color:${isOverloaded ? '#ef4444' : '#f59e0b'}">${Math.round(totalDemand)} pax</strong></div>
+    <div class="popup-row"><span>Total Waiting</span><strong style="color:${isOverloaded ? '#ef4444' : '#f59e0b'}">${Math.round(totalDemand)} pax</strong></div>
+    
+    <div style="background:#f1f5f9;border-radius:4px;padding:6px 8px;margin:6px 0;font-size:10px;color:#475569;border:1px solid #cbd5e1;">
+      <strong>🧮 Algorithm Calculation:</strong><br/>
+      <div style="display:flex;justify-content:space-between;margin-top:2px;"><span>Base (Scheduled):</span> <strong>${Math.round(schedDemand)}</strong></div>
+      <div style="display:flex;justify-content:space-between;"><span>Surge (Live):</span> <strong>${Math.round(surgeDemand)}</strong></div>
+      <div style="border-top:1px solid #cbd5e1;margin-top:2px;padding-top:2px;display:flex;justify-content:space-between;"><span>Total Demand:</span> <strong>${Math.round(schedDemand + surgeDemand)}</strong></div>
+    </div>
+
     ${nextEta !== null ? `<div class="popup-row"><span>Next bus</span><strong>${nextEta} min</strong></div>` : ''}
     <div class="popup-row"><span>Routes</span><strong>${stop.routesServing.length}</strong></div>
     ${isOverloaded ? `<div style="color:#f87171;font-size:11px;margin-top:6px;font-weight:600;">⚠️ OVERLOADED — Reroute recommended</div>` : ''}

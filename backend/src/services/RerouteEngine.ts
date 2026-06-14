@@ -99,7 +99,8 @@ export class RerouteEngine {
         reserveChoice.busId,
         routeId,
         reserveChoice.startFraction,
-        reserveChoice.startDirection
+        reserveChoice.startDirection,
+        reserveChoice.travelCost
       );
 
       this.issueAlert({
