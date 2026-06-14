@@ -22,7 +22,7 @@ export async function serviceProtectionCheck(
   now: number
 ): Promise<CheckResult> {
   const remainingBuses = allBuses.filter(
-    (b) => b.currentRouteId === route.id && b.id !== busBeingRemoved.id && b.status === 'IN_SERVICE'
+    (b) => b.currentRouteId === route.id && b.id !== busBeingRemoved.id && (b.status === 'IN_SERVICE' || b.status === 'WAITING_AT_TERMINUS')
   );
 
   if (remainingBuses.length < route.serviceGuarantee.minBusesInService) {

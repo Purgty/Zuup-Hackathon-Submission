@@ -562,7 +562,7 @@ function applyBusMarkerStyle(
   if (inner) {
     // Fast path: update only dynamic styles, no DOM rebuilding
     Object.assign(inner.style, {
-      background: homeColor,
+      background: isReserve ? '#8b5cf6' : homeColor,
       border: `${borderWidth} ${borderStyle} ${borderColor}`,
       boxShadow: isSelected ? `0 0 0 3px ${homeColor}55` : 'none',
     });
@@ -581,11 +581,46 @@ function applyBusMarkerStyle(
         badge = buildRerouteBadge(currentRouteColor);
         inner.appendChild(badge);
       } else {
+        badge.textContent = '↪';
         badge.style.background = currentRouteColor ?? '#f59e0b';
       }
+    } else if (isReserve) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'reroute-badge';
+        inner.appendChild(badge);
+      }
+      badge.textContent = 'R';
+      Object.assign(badge.style, {
+        position: 'absolute', top: '-7px', right: '-7px',
+        background: '#8b5cf6', color: '#fff', borderRadius: '50%',
+        width: '14px', height: '14px', fontSize: '9px', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', fontWeight: '700',
+        border: '1px solid #fff',
+      });
     } else if (badge) {
       badge.remove();
     }
+
+    // Floating label for travel cost
+    let costLabel = inner.querySelector<HTMLElement>('.travel-cost-label');
+    if (bus?.activeRerouteDistance != null) {
+      if (!costLabel) {
+        costLabel = document.createElement('div');
+        costLabel.className = 'travel-cost-label';
+        inner.appendChild(costLabel);
+      }
+      costLabel.textContent = `Cost: ${bus.activeRerouteDistance.toFixed(2)}`;
+      Object.assign(costLabel.style, {
+        position: 'absolute', bottom: '-20px', left: '50%',
+        transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.7)',
+        color: '#fbbf24', padding: '2px 6px', borderRadius: '4px',
+        fontSize: '9px', fontWeight: 'bold', whiteSpace: 'nowrap',
+      });
+    } else if (costLabel) {
+      costLabel.remove();
+    }
+
     return;
   }
 

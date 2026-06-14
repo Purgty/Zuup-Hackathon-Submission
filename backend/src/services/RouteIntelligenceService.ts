@@ -15,7 +15,7 @@ const UNDERLOAD_RATIO_THRESHOLD = 0.25;
  */
 export class RouteIntelligenceService {
   private intervalHandle: NodeJS.Timeout | null = null;
-  private readonly TICK_MS = 30_000;
+  private readonly TICK_MS = 3_000;
 
   constructor(private readonly routing: IRoutingService) {}
 

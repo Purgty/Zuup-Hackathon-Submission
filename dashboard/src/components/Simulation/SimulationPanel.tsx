@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store/useStore';
 
 // ─── Types ───────────────────────────────────────────────────
-type ScenarioKey = 'END_TERMINUS' | 'START_TERMINUS' | 'OVERWHELMING' | 'MULTI_ROUTE';
+type ScenarioKey = 'END_TERMINUS' | 'START_TERMINUS' | 'OVERWHELMING' | 'MULTI_ROUTE' | 'CASCADE_PREVENTION' | 'CROSS_ROUTE_STEAL';
 
 interface ScenarioConfig {
   key: ScenarioKey;
@@ -45,6 +45,22 @@ const SCENARIOS: ScenarioConfig[] = [
     subtitle: 'Simultaneous surge on R1 + R2 at Dairy Circle',
     color: '#f59e0b',
     expectedBehaviour: 'R1 end-reserve AND R2 end-reserve both deploy in parallel',
+  },
+  {
+    key: 'CASCADE_PREVENTION',
+    icon: '🛡️',
+    title: 'Cascade Prevention',
+    subtitle: 'Reject steal due to latent crowd',
+    color: '#ec4899', // pink
+    expectedBehaviour: 'R3 rejected due to crowd ahead, R2 stolen instead',
+  },
+  {
+    key: 'CROSS_ROUTE_STEAL',
+    icon: '🚫',
+    title: 'Reserves Broken',
+    subtitle: 'Massive surge while reserves are dead',
+    color: '#8b5cf6', // purple
+    expectedBehaviour: 'System bypasses reserve tier and steals an active bus from a less crowded route',
   },
 ];
 
@@ -154,7 +170,7 @@ export function SimulationPanel() {
         </button>
 
         {showScenarios && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', overflowY: 'auto', flex: 1, paddingRight: '4px' }}>
             {SCENARIOS.map(cfg => {
               const isRunning = runningScenario === cfg.key;
               return (

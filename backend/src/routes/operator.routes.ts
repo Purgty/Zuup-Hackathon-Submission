@@ -161,6 +161,59 @@ router.post('/simulate/scenario', (req: Request, res: Response) => {
         res.json({ success: true, scenario, description: 'Simultaneous surge at shared Dairy Circle stop on R1 and R2 — parallel reserve deployment' });
         break;
 
+      case 'CASCADE_PREVENTION':
+        // Edge Case: Break reserves, but ALSO place a crowd ahead of the bus on Route 3.
+        // The engine must attempt a cross-route steal, see the latent demand on R3, reject R3 (Cascade Prevented), and steal from R2 instead.
+        import('../services/StateStore').then(({ stateStore }) => {
+          for (const bus of stateStore.buses.values()) {
+            if (bus.status === 'RESERVE') {
+              bus.status = 'BREAKDOWN'; // Take all reserves offline
+            }
+          }
+          // Inject latent demand (crowd) ahead of the bus on R3 (stop-10)
+          simulatorService.triggerSurge({ stopId: 'stop-10', routeId: 'route-3', count: 40 });
+          
+          // Inject massive surge on R1 requiring a cross route steal
+          setTimeout(() => {
+            simulatorService.triggerSurge({ stopId: 'stop-1', routeId: 'route-1', count: 90 });
+          }, 500);
+
+          // Restore reserves after 20 seconds so the system recovers for the next demo
+          setTimeout(() => {
+            for (const bus of stateStore.buses.values()) {
+              if (bus.status === 'BREAKDOWN' && bus.registrationNo.includes('RSV')) {
+                bus.status = 'RESERVE';
+              }
+            }
+          }, 20_000);
+        });
+        res.json({ success: true, scenario, description: 'Shows algorithm rejecting R3 due to latent demand, safely stealing from R2 instead' });
+        break;
+
+      case 'CROSS_ROUTE_STEAL':
+        // Edge Case: All reserve buses across the entire system are out of order.
+        // The engine must steal an IN_SERVICE bus from a less crowded route to sustain the surging route.
+        import('../services/StateStore').then(({ stateStore }) => {
+          for (const bus of stateStore.buses.values()) {
+            if (bus.status === 'RESERVE') {
+              bus.status = 'BREAKDOWN'; // Take all reserves offline
+            }
+          }
+          // Inject massive surge on R1
+          simulatorService.triggerSurge({ stopId: 'stop-1', routeId: 'route-1', count: 90 });
+
+          // Restore reserves after 20 seconds so the system recovers for the next demo
+          setTimeout(() => {
+            for (const bus of stateStore.buses.values()) {
+              if (bus.status === 'BREAKDOWN' && bus.registrationNo.includes('RSV')) {
+                bus.status = 'RESERVE';
+              }
+            }
+          }, 20_000);
+        });
+        res.json({ success: true, scenario, description: 'All reserves broken — stealing active bus from another route' });
+        break;
+
       default:
         res.status(400).json({ success: false, error: `Unknown scenario: ${scenario}` });
     }
